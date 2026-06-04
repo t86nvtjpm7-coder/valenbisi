@@ -1,0 +1,544 @@
+---
+title: "¿Llega Valenbisi a todos por igual? Análisis geoespacial de equidad en el sistema de bicicleta pública de Valencia"
+author: "Mireia Doménech Rodríguez"
+date: today
+format:
+  html:
+    self-contained: true
+    toc: true
+    toc-float: true
+    theme: flatly
+    highlight-style: tango
+    number-sections: true
+    echo: false
+execute:
+  echo: true
+  message: false
+  warning: false
+
+---
+
+---
+
+## Resumen
+
+Este trabajo analiza si el sistema de bicicleta pública Valenbisi en Valencia distribuye su red de estaciones de forma equitativa en términos socioeconómicos. Combinando datos del Geoportal del Ayuntamiento de Valencia, el Atlas de Distribución de Renta del INE (2023) y la cartografía de secciones censales de la Generalitat Valenciana, se examina si las secciones censales con mayor renta per cápita cuentan con mejor cobertura del servicio. El análisis incluye exploración visual, cuantificación de la cobertura por sección censal, y análisis de autocorrelación espacial de la renta mediante el índice de Moran y mapas LISA. Los resultados muestran que existe una asociación espacial significativa entre la cobertura de Valenbisi y el nivel de renta, con implicaciones directas para la política de movilidad urbana sostenible del Ayuntamiento de Valencia.
+
+---
+
+## Introducción
+
+Los sistemas de bicicleta compartida (*Bike Sharing Systems*, BSS) forman parte cada vez más de la movilidad urbana sostenible en las ciudades europeas. Valencia no es una excepción: Valenbisi, gestionado por JCDecaux desde 2010, cuenta con más de 270 estaciones distribuidas por la ciudad. Sin embargo, la mera existencia de una red no garantiza que todos los ciudadanos se beneficien por igual de ella. Si las estaciones se concentran en los barrios más ricos, el servicio no solo no reduce la desigualdad de movilidad, sino que puede ampliarla.
+
+La literatura académica ha documentado este problema en ciudades como Montreal (Hosford & Winters, 2018) o Chicago (Smith, 2019), donde los sistemas de bicicleta pública tendían a implantar más estaciones en barrios de renta alta, con mejor infraestructura ciclista y mayor demanda turística. El caso de Valencia no ha sido analizado desde esta perspectiva con datos recientes.
+
+Este trabajo responde a una pregunta concreta: **¿tienen las secciones censales más ricas de Valencia mejor cobertura de Valenbisi que las más pobres?** Para responderla se combina el análisis de cobertura espacial a nivel de sección censal con el análisis de autocorrelación espacial de la renta, identificando si los clústeres de alta renta coinciden geográficamente con las zonas de mayor densidad de estaciones.
+
+Este trabajo persigue tres objetivos específicos: (1) cuantificar la cobertura física de Valenbisi a nivel de sección censal y compararla con el nivel de renta; (2) evaluar si variables alternativas como la densidad de población explican mejor la distribución del servicio; y (3) analizar la autocorrelación espacial de la renta mediante el índice de Moran y el análisis LISA para identificar los clústeres socioeconómicos que coinciden o no con la red de estaciones.
+
+---
+
+```{r}
+library(tidyverse)
+library(sf)
+library(spdep)
+library(tmap)
+library(leaflet)
+library(osmdata)
+library(jsonlite)
+library(knitr)
+library(kableExtra)
+library(RColorBrewer)
+library(rgeoda)
+```
+
+## Datos y Metodología
+
+Para el procesamiento geoespacial y el análisis estadístico se utilizó el software R, empleando las librerías `tidyverse` para la manipulación de datos, `sf` y `spdep` para operaciones espaciales y cálculo de matrices de vecindad, `rgeoda` para el análisis LISA, y `tmap` y `leaflet` para la generación de mapas temáticos estáticos e interactivos.
+
+### Estaciones Valenbisi
+
+Las estaciones se obtienen directamente desde el Geoportal del Ayuntamiento de Valencia, que publica los datos en formato GeoJSON con actualización cada 10 minutos . 
+
+```{r estaciones}
+url_valenbisi <- paste0(
+  "https://geoportal.valencia.es/server/rest/services/OPENDATA/",
+  "Trafico/MapServer/228/query?where=1=1&outFields=*&f=geojson")
+
+estaciones_sf <- st_read(url_valenbisi, quiet = TRUE) %>%
+  filter(open == "T") %>%
+  mutate(
+    lon      = st_coordinates(st_transform(geometry, 4326))[, 1],
+    lat      = st_coordinates(st_transform(geometry, 4326))[, 2],
+    capacity = as.numeric(total)) %>%
+  st_transform(crs = 25830)
+
+
+```
+
+### Renta por sección censal
+
+La renta neta media por persona se obtiene del Atlas de Distribución de Renta de los Hogares del INE (2023), a nivel de sección censal para Valencia , habiendo un total de 612 secciones con renta . 
+
+```{r renta}
+url_renta <- "https://www.ine.es/jaxiT3/files/t/es/csv_bdsc/31250.csv"
+
+renta_vlc <- read.csv2(url_renta, encoding = "UTF-8") %>%
+  as_tibble() %>%
+  filter(
+    !is.na(Secciones),
+    Secciones != "",
+    grepl("^4625", Secciones),
+    Indicadores.de.renta.media.y.mediana == "Renta neta media por persona",
+    Periodo == 2023 ) %>%
+  mutate(cusec       = str_extract(Secciones, "^\\d{10}"),
+    renta_media = as.numeric(gsub("\\.", "", gsub(",", ".", Total)))) %>%
+  select(cusec, renta_media) %>%
+  drop_na()
+
+
+```
+
+### Cartografía de secciones censales
+
+La cartografía proviene del portal de datos abiertos de la Generalitat Valenciana , donde encontramos 588 secciones censales y 587 con datos de renta .
+
+```{r secciones}
+url_secciones <- paste0(
+  "https://dadesobertes.gva.es/dataset/",
+  "c78b4f62-bbd6-4bc0-a6d3-c853faca7b5f/resource/",
+  "333e346f-85b4-4c06-a78a-45685ff47026/download/",
+  "ca_seccion_censal_20260505.geojson")
+
+secciones <- st_read(url_secciones, quiet = TRUE) %>%
+  filter(INE_MUN == "46250") %>%
+  st_transform(crs = 25830) %>%
+  mutate(ID_SSCC = as.character(ID_SSCC)) %>%
+  left_join(renta_vlc, by = c("ID_SSCC" = "cusec"))
+
+
+```
+
+---
+
+## Análisis Exploratorio
+
+### Mapa interactivo de estaciones
+
+```{r mapa_estaciones}
+estaciones_wgs <- estaciones_sf %>% st_transform(4326)
+
+leaflet(estaciones_wgs) %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircleMarkers(
+    radius      = ~sqrt(capacity) * 1.2,
+    color       = "#C71585",
+    fillColor   = "#FF69B4",
+    fillOpacity = 0.7,
+    stroke      = TRUE,
+    weight      = 1,
+    label       = ~paste0(name, " — ", capacity, " plazas"),
+    popup       = ~paste0("<b>", name, "</b><br>",
+                          "Dirección: ", address, "<br>",
+                          "Capacidad: ", capacity, " plazas<br>",
+                          "Bicis disponibles: ", available)) %>%
+  addControl("<b>Estaciones Valenbisi — Valencia</b>", position = "topright")
+```
+
+El mapa interactivo muestra las 273 estaciones activas de Valenbisi distribuidas por Valencia. El tamaño de cada círculo es proporcional a la capacidad de la estación , las más grandes corresponden a nodos de alta rotación como la estación de Renfe, el centro comercial El Saler o el Passeig de la Petxina.
+
+A simple vista se identifican dos patrones claros. Por un lado, una **alta densidad en el centro y el Eixample**, donde las estaciones se solapan visualmente y apenas hay huecos entre ellas. Por otro, una **caída progresiva hacia la periferia**: los barrios del noroeste (Benicalap, Torrefiel) y el oeste (Patraix, Jesús) tienen estaciones mucho más dispersas, con zonas sin cobertura visible. El extremo noreste (Ronda Nord, la zona junto al río Turia en el norte) y el extremo suroeste son las áreas con menor presencia.
+
+Esta distribución asimétrica es el punto de partida del análisis: si la red siguiera una lógica de cobertura equitativa, los puntos estarían más uniformemente repartidos por todo el municipio.
+
+### Mapa de renta por sección censal
+
+```{r mapa_renta}
+tmap_mode("plot")
+
+tm_shape(secciones) +
+  tm_polygons(col          = "renta_media",
+              border.col   = "grey60",
+              border.alpha = 0.3,
+              style        = "jenks", n = 6,
+              palette      = c("#FFFFFF", "#FFD6E7", "#FF85C0",
+                               "#FF1493", "#C71585", "#7B0047"),
+              title        = "Renta media (€)",
+              colorNA      = "grey80",
+              textNA       = "Sin datos") +
+  tm_layout(main.title      = "Renta neta media por persona - Valencia 2023\n(por sección censal)",
+            main.title.size = 0.85,
+            frame           = FALSE,
+            legend.position = c("right", "bottom"),
+            inner.margins   = rep(0.02, 4))
+```
+
+El mapa de renta muestra un gradiente socioeconómico muy marcado en Valencia. Los tonos más oscuros (rentas superiores a 21.000 € anuales por persona) se concentran en el **eje central y nordeste** de la ciudad: el Eixample, Pla del Real, Ciutat Jardí y la zona costera de la Patacona. En el extremo opuesto, las secciones con rentas más bajas (por debajo de 14.000 €) se sitúan principalmente en los **barrios del norte y noroeste** (Benicalap, Torrefiel, Orriols) y en algunas zonas del oeste y sur del municipio.
+
+Hay dos cosas llamativas. Primero, la **concentración de secciones muy ricas en el centro** forma un núcleo compacto y bien definido, no disperso. Segundo, las **secciones grises** (sin datos) corresponden a zonas industriales o de baja densidad residencial que no tienen información de renta porque prácticamente no hay población empadronada.
+
+Este patrón no es aleatorio , como confirmaremos en el análisis de Moran , y tiene una correspondencia visual directa con la distribución de estaciones del mapa anterior: ambos fenómenos comparten la misma geografía.
+
+### Mapa combinado: estaciones sobre renta
+
+```{r mapa_combinado}
+tmap_mode("view")
+
+tm_shape(secciones) +
+  tm_polygons(col          = "renta_media",
+              border.col   = "grey60",
+              border.alpha = 0.3,
+              style        = "jenks", n = 6,
+              palette      = c("#FFFFFF", "#FFD6E7", "#FF85C0",
+                               "#FF1493", "#C71585", "#7B0047"),
+              title        = "Renta media (€)",
+              alpha        = 0.75) +
+  tm_shape(estaciones_sf) +
+  tm_dots(col   = "black",
+          size  = 0.03,
+          title = "Estaciones Valenbisi") +
+  tm_layout(title = "Estaciones Valenbisi sobre renta por sección censal")
+```
+
+```{r reset_tmap1}
+tmap_mode("plot")
+```
+
+Este es el mapa más importante del análisis exploratorio porque superpone directamente las dos variables de interés. Los puntos negros representan las estaciones Valenbisi y el fondo de color muestra la renta por sección censal.
+
+
+A simple vista la relación entre estaciones y renta no resulta evidente, ya que las estaciones están presentes en secciones de muy distintos niveles de renta y la concentración en el centro podría explicarse por la mayor actividad peatonal y comercial, independientemente del nivel socioeconómico. Es precisamente esta ambigüedad visual la que justifica recurrir al análisis cuantitativo y espacial para determinar si existe una relación real entre cobertura y renta.
+
+### Estadísticos descriptivos de las estaciones
+
+```{r descriptivos}
+estaciones_sf %>%
+  st_drop_geometry() %>%
+  summarise(
+    `Nº estaciones`    = n(),
+    `Capacidad total`  = sum(capacity, na.rm = TRUE),
+    `Capacidad media`  = round(mean(capacity, na.rm = TRUE), 1),
+    `Capacidad mínima` = min(capacity, na.rm = TRUE),
+    `Capacidad máxima` = max(capacity, na.rm = TRUE)) %>%
+  kable(caption = "Estadísticos descriptivos de las estaciones Valenbisi") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+La tabla muestra los estadísticos básicos de la red. Valenbisi cuenta con **273 estaciones activas** y una capacidad total de **5.391 plazas**, lo que da una media de 19,7 plazas por estación. La estación más pequeña tiene 9 plazas y la más grande 40.
+
+Lo más relevante de estos datos es que la variación de capacidad entre estaciones (de 9 a 40 plazas) es considerable ,casi un factor de 5 entre la mínima y la máxima. Esto sugiere que no todas las estaciones tienen el mismo peso en la red, y que el análisis de cobertura por número de estaciones que hacemos en este trabajo es una medida conservadora: una sección censal con una estación de 40 plazas tiene más servicio real que una con una estación de 9.
+
+
+---
+
+## Análisis de Cobertura por Sección Censal
+
+Para cuantificar la cobertura del servicio a nivel de sección censal, se calcula el número de estaciones que caen dentro de cada sección y el porcentaje de secciones con al menos una estación. Esto permite comparar directamente la cobertura con el nivel de renta sin depender de umbrales arbitrarios de distancia.
+
+```{r cobertura_secciones}
+
+estaciones_por_seccion <- st_join(estaciones_sf, secciones) %>%
+  st_drop_geometry() %>%
+  count(ID_SSCC, name = "n_estaciones")
+
+secciones <- secciones %>%
+  left_join(estaciones_por_seccion, by = "ID_SSCC") %>%
+  mutate(
+    n_estaciones = replace_na(n_estaciones, 0),
+    tiene_estacion = n_estaciones > 0)
+
+
+```
+
+### Mapa de estaciones por sección censal
+
+```{r mapa_estaciones_seccion}
+tmap_mode("plot")
+
+tm_shape(secciones) +
+  tm_polygons(col          = "n_estaciones",
+              border.col   = "grey60",
+              border.alpha = 0.3,
+              style        = "fixed",
+              breaks       = c(0, 1, 2, 3, 5, 10, 20),
+              palette      = c("#F7F7F7", "#FFD6E7", "#FF85C0",
+                               "#FF1493", "#C71585", "#7B0047"),
+              title        = "Nº estaciones",
+              colorNA      = "grey80") +
+  tm_layout(main.title      = "Número de estaciones Valenbisi por sección censal",
+            main.title.size = 0.85,
+            frame           = FALSE,
+            legend.position = c("right", "bottom"),
+            inner.margins   = rep(0.02, 4))
+```
+Este mapa traduce la distribución de estaciones a una variable cuantitativa por sección censal, lo que permite ver con más precisión dónde se concentra el servicio.
+
+Lo primero que llama la atención es que **la mayoría de las secciones son blancas** , es decir,  sin ninguna estación. Esto confirma que el 61,4% de las secciones censales de Valencia no tiene ninguna estación dentro de sus límites. Las secciones con estaciones son una minoría, y se concentran en una franja central bien delimitada.
+
+La sección en **negro intenso** (10-20 estaciones) corresponde probablemente a la zona universitaria del nordeste de la ciudad, donde el alto flujo de estudiantes y trabajadores genera una demanda concentrada que justifica esa densidad excepcional de servicio. En general, las secciones con 3 o más estaciones están distribuidas por el centro sin formar un único núcleo compacto, lo que refleja que la red cubre varios ejes urbanos simultáneamente.
+
+Lo más relevante para el análisis de equidad es que **la gran corona periférica** , que incluye los barrios del norte y parte del sur , está prácticamente en blanco. Dado que estas zonas coinciden con las secciones de menor renta del mapa anterior, este mapa empieza a apuntar a la relación que cuantificaremos en los análisis siguientes.
+
+
+### Renta media según cobertura
+
+```{r tabla_equidad}
+secciones %>%
+  st_drop_geometry() %>%
+  filter(!is.na(renta_media)) %>%
+  mutate(cobertura = ifelse(tiene_estacion, "Con estación", "Sin estación")) %>%
+  group_by(cobertura) %>%
+  summarise(
+    `Nº secciones`    = n(),
+    `Renta media (€)` = round(mean(renta_media), 0),
+    `Mediana (€)`     = round(median(renta_media), 0),
+    `Mín (€)`         = round(min(renta_media), 0),
+    `Máx (€)`         = round(max(renta_media), 0)) %>%
+  rename(Cobertura = cobertura) %>%
+  kable(caption = "Renta media por sección censal según presencia de estaciones Valenbisi") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+
+```{r boxplot_equidad, fig.width=7, fig.height=5}
+secciones %>%
+  st_drop_geometry() %>%
+  filter(!is.na(renta_media)) %>%
+  mutate(cobertura = ifelse(tiene_estacion, "Con estación", "Sin estación")) %>%
+  ggplot(aes(x = cobertura, y = renta_media, fill = cobertura)) +
+  geom_boxplot(alpha = 0.8, outlier.shape = 21, outlier.fill = "white") +
+  scale_fill_manual(values = c("Con estación" = "#FF69B4",
+                                "Sin estación" = "#D3D3D3")) +
+  labs(title    = "Renta media según presencia de estaciones Valenbisi",
+       subtitle = "Por sección censal - Valencia 2023",
+       x = NULL, y = "Renta neta media por persona (€)") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+```
+La tabla y el boxplot muestran la primera evidencia cuantitativa de la relación entre cobertura y renta.
+
+Las secciones con al menos una estación tienen una renta media de **17.545 €**, frente a los **15.369 €** de las secciones sin estación , una diferencia de 2.176 € anuales por persona, aproximadamente un 14% más. La diferencia de medianas (16.507 € vs 14.841 €) apunta en la misma dirección y es menos sensible a valores extremos.
+
+El boxplot visualiza esta diferencia con claridad: la caja rosa (con estación) está desplazada hacia arriba respecto a la gris (sin estación), y las medianas , las líneas negras dentro de cada caja , no se solapan. Esto indica que la diferencia no es producto de unos pocos valores atípicos sino de una tendencia sistemática en toda la distribución.
+
+Dicho esto, es importante no sobreinterpretar el resultado. Las dos distribuciones tienen un rango amplio y se solapan considerablemente , hay secciones sin estación con rentas altas y secciones con estación con rentas bajas. La diferencia es real pero moderada, y puede tener explicaciones alternativas al sesgo socioeconómico, como la mayor densidad peatonal del centro o la proximidad a nodos de transporte, factores que casualmente coinciden con zonas de mayor renta.
+
+
+### Correlación entre renta y número de estaciones
+
+```{r correlacion_renta_estaciones, fig.width=7, fig.height=5}
+secciones %>%
+  st_drop_geometry() %>%
+  filter(!is.na(renta_media)) %>%
+  ggplot(aes(x = renta_media, y = n_estaciones)) +
+  geom_point(color = "#FF69B4", alpha = 0.5, size = 1.5) +
+  geom_smooth(method = "lm", color = "#C71585", se = TRUE, linewidth = 1) +
+  labs(title    = "Relación entre renta media y número de estaciones Valenbisi",
+       subtitle = "Por sección censal — Valencia 2023",
+       x = "Renta neta media por persona (€)",
+       y = "Nº de estaciones en la sección") +
+  theme_minimal(base_size = 12)
+```
+
+
+La recta de regresión tiene una **pendiente positiva muy leve** ,técnicamente confirma que a mayor renta hay algo más de estaciones, coherente con la diferencia de medias que vimos antes. Sin embargo, la banda de confianza es muy amplia y la dispersión de los puntos es enorme, lo que indica que la relación es **débil**.
+
+Lo que más llama la atención es que la mayoría de los puntos se apilan en **y = 0** independientemente de la renta , hay secciones con rentas muy bajas, medias y altas que tienen cero estaciones. Y los pocos valores altos de estaciones (4, 5, incluso el outlier de casi 12) aparecen en rentas intermedias, no necesariamente en las más altas.
+
+En resumen, este gráfico matiza los resultados anteriores: **existe una relación positiva entre renta y número de estaciones, pero es modesta y con mucha variabilidad**. La renta por sí sola no explica bien la distribución de Valenbisi , probablemente haya otros factores como la densidad urbana, la proximidad al centro histórico o la accesibilidad peatonal que tienen más peso.
+---
+
+
+###  Densidad urbana como variable alternativa
+
+La relación débil entre renta y número de estaciones observada en el gráfico anterior sugiere que puede haber otros factores con más poder explicativo. La **densidad de población** es el candidato más obvio: Valenbisi es un sistema de transporte urbano y es razonable esperar que las estaciones se sitúen donde hay más gente, independientemente de su nivel de renta.
+
+```{r densidad_poblacion}
+pob_vlc <- read.csv2("./4601.csv", encoding = "UTF-8") %>%
+  as_tibble() %>%
+  filter(
+    Sexo == "Ambos Sexos",
+    Edad..grupos.quinquenales. == "Total",
+    grepl("^4625", Sección)) %>%
+  mutate(
+    cusec     = as.character(Sección),
+    poblacion = as.numeric(gsub("\\.", "", gsub(",", ".", Total)))) %>%
+  select(cusec, poblacion) %>%
+  drop_na()
+
+secciones <- secciones %>%
+  left_join(pob_vlc, by = c("ID_SSCC" = "cusec")) %>%
+  mutate(
+    area_km2 = as.numeric(st_area(geometry)) / 1e6,
+    densidad = poblacion / area_km2)
+
+
+secciones %>%
+  st_drop_geometry() %>%
+  filter(!is.na(densidad), !is.na(n_estaciones)) %>%
+  ggplot(aes(x = densidad, y = n_estaciones)) +
+  geom_point(color = "#FF69B4", alpha = 0.5, size = 1.5) +
+  geom_smooth(method = "lm", color = "#C71585", se = TRUE, linewidth = 1) +
+  labs(title    = "Relación entre densidad de población y número de estaciones Valenbisi",
+       subtitle = "Por sección censal - Valencia 2023",
+       x = "Densidad de población (hab/km²)",
+       y = "Nº de estaciones en la sección") +
+  theme_minimal(base_size = 12)
+```
+
+
+El resultado es sorprendente a primera vista: la recta de regresión tiene **pendiente negativa**, lo que indica que las secciones con mayor densidad de población tienden a tener *menos* estaciones, no más. Esto contradice la hipótesis inicial de que Valenbisi seguiría una lógica de demanda poblacional.
+
+La explicación está en cómo funciona la densidad calculada como habitantes por km². Las secciones del centro histórico de Valencia son físicamente muy pequeñas en superficie pero concentran mucha población, lo que dispara su densidad hasta valores superiores a 75.000 hab/km². Al mismo tiempo, esas secciones tan pequeñas no pueden albergar muchas estaciones simplemente porque no tienen espacio físico suficiente. En cambio, las secciones periféricas son grandes en superficie, tienen densidades más moderadas, y sí pueden tener varias estaciones dentro de sus límites.
+
+Comparando este gráfico con el de renta, ninguna de las dos variables explica bien la distribución de Valenbisi de forma lineal. La dispersión es enorme en ambos casos y las rectas tienen muy poca pendiente. Esto sugiere que la localización de las estaciones responde a una combinación de factores :accesibilidad peatonal, proximidad a nodos de transporte, flujo turístico y/o disponibilidad de espacio en la vía pública .  Ninguna variable socioeconómica captura por sí sola. El análisis LISA del apartado siguiente, al trabajar directamente con la estructura espacial, ofrece una perspectiva más informativa que estos modelos lineales simples.
+
+
+---
+
+
+
+## Análisis de Autocorrelación Espacial de la Renta
+
+Antes de interpretar la relación entre renta y cobertura, es importante entender si la propia renta está distribuida de forma aleatoria en el espacio o si existen clústeres de secciones ricas y pobres. Si la renta tiene estructura espacial, la desigualdad en la cobertura de Valenbisi no es solo una cuestión de qué secciones tienen estaciones, sino de qué zonas geográficas quedan excluidas.
+
+### Test de Moran
+
+```{r moran,include=FALSE}
+secciones_ok <- secciones %>% filter(!is.na(renta_media))
+
+wr <- poly2nb(secciones_ok, queen = FALSE)
+ww <- nb2listw(wr, style = "W", zero.policy = TRUE)
+
+moran.test(secciones_ok$renta_media, listw = ww, zero.policy = TRUE)
+```
+
+```{r moran_plot}
+par(mar = c(3, 3, 2, 1))
+moran.plot(
+  secciones_ok$renta_media,
+  listw     = ww,
+  col       = "#FF69B4",
+  main      = "Gráfico de dispersión de Moran — Renta por sección censal",
+  xlab      = "Renta (estandarizada)",
+  ylab      = "Retardo espacial (estandarizado)",
+  zero.policy = TRUE)
+```
+
+El test de Moran devuelve un índice **I = 0,717** con un p-valor prácticamente cero (< 2,2×10⁻¹⁶), lo que confirma de forma contundente que la renta no se distribuye al azar en Valencia. Las secciones censales con renta similar tienden a agruparse espacialmente ,los barrios ricos están rodeados de barrios ricos, y los pobres de pobres.
+
+El gráfico de dispersión de Moran lo ilustra bien. El eje X muestra la renta de cada sección estandarizada y el eje Y su retardo espacial , es decir, la renta media de sus vecinas. La **pendiente positiva clara** de la recta es la representación visual del índice I: casi todos los puntos siguen la diagonal, lo que significa que prácticamente no hay secciones ricas rodeadas de pobres ni al revés.
+
+Los puntos etiquetados con números son los **outliers influyentes** que más contribuyen a esa pendiente , secciones que se alejan más de la media global y que por tanto tienen más peso en el cálculo del índice. Están concentrados en los extremos del gráfico, tanto en el cuadrante inferior izquierdo (secciones pobres rodeadas de pobres) como en el superior derecho (ricas rodeadas de ricas).
+
+Un I de 0,717 es un valor muy alto , indica una segregación socioeconómica espacial marcada en Valencia, que sirve de contexto para entender por qué la distribución de Valenbisi puede estar sesgada: si los barrios ricos forman bloques compactos y los pobres también, cualquier servicio que se implante siguiendo la demanda del centro acabará reproduciendo esa estructura.
+
+
+
+### Mapa LISA de la renta con estaciones superpuestas
+
+
+```{r lisa}
+match_palette <- function(patterns, classifications, colors) {
+  classes_present <- unique(patterns)
+  mat     <- matrix(c(classifications, colors), ncol = 2)
+  logi    <- classifications %in% classes_present
+  pre_col <- matrix(mat[logi], ncol = 2)
+  return(pre_col[, 2])}
+
+lisa_map <- function(df, lisa, alpha = .05) {
+  clusters      <- lisa_clusters(lisa, cutoff = alpha)
+  labels        <- lisa_labels(lisa)
+  colors        <- lisa_colors(lisa)
+  lisa_patterns <- labels[clusters + 1]
+  pal    <- match_palette(lisa_patterns, labels, colors)
+  labels <- labels[labels %in% lisa_patterns]
+  df["lisa_clusters"] <- clusters
+  tm_shape(df) +
+    tm_fill("lisa_clusters",
+            labels  = labels,
+            palette = pal,
+            style   = "cat",
+            colorNA = "grey80",
+            textNA  = "Sin datos")}
+
+w_queen  <- queen_weights(secciones_ok)
+lisa_ren <- local_moran(w_queen, secciones_ok["renta_media"])
+
+tmap_mode("plot")
+
+lisa_map(secciones_ok, lisa_ren) +
+  tm_borders(col = "grey60", lwd = 0.3) +
+  tm_shape(estaciones_sf) +
+  tm_dots(col = "black", size = 0.02) +
+  tm_layout(main.title      = "Mapa LISA — Renta por sección censal\ncon estaciones Valenbisi superpuestas",
+            main.title.size = 0.8,
+            frame           = FALSE,
+            legend.outside  = TRUE)
+```
+
+
+El mapa LISA es el resultado más relevante del análisis. Muestra dos tipos de clústeres estadísticamente significativos con una geografía muy clara.
+
+El **clúster Alto-Alto (rojo)** ocupa el centro histórico y el Eixample , secciones de renta alta rodeadas de vecinas también de renta alta. Es precisamente aquí donde se concentra la mayor parte de las estaciones Valenbisi, visibles como puntos negros densamente agrupados sobre las zonas rojas.
+
+El **clúster Bajo-Bajo (azul)** aparece en dos zonas diferenciadas: el norte y noroeste de la ciudad (Benicalap, Torrefiel, Campanar) y algunas secciones del oeste y sur. En estas zonas la presencia de estaciones es notablemente escasa , los puntos negros prácticamente desaparecen sobre el azul.
+
+Las secciones **Alto-Bajo (rosa)** son outliers espaciales , secciones de renta relativamente alta rodeadas de zonas de renta baja , y aparecen en los bordes del clúster central.
+
+La coincidencia espacial entre el clúster rojo y la concentración de estaciones, y entre el clúster azul y la ausencia de estaciones, es el argumento más sólido . No prueba causalidad, pero sí que el servicio sigue la misma geografía que la segregación socioeconómica de la ciudad.
+
+---
+
+
+
+## Resultados
+
+El análisis realizado permite responder la pregunta de investigación desde tres perspectivas complementarias.
+
+**Cobertura y renta:** de las 587 secciones censales de Valencia con datos de renta, 227 (38,6%) cuentan con al menos una estación Valenbisi. Las secciones con estación presentan una renta media de 17.545 € frente a los 15.369 € de las secciones sin cobertura, una diferencia de 2.176 € anuales por persona (~14%). La diferencia de medianas (16.507 € vs 14.841 €) confirma que la tendencia no está distorsionada por valores extremos. Sin embargo, el diagrama de dispersión entre renta y número de estaciones muestra una relación positiva muy débil con enorme dispersión, lo que indica que la renta por sí sola no explica la distribución del servicio.
+
+**Densidad de población:** el análisis de densidad arroja un resultado contraintuitivo , la recta de regresión tiene pendiente negativa, es decir, las secciones más densas tienen menos estaciones. Esto se explica por el tamaño físico de las secciones: las del centro histórico son muy pequeñas en superficie y tienen densidades altísimas, pero no pueden albergar muchas estaciones por falta de espacio. Al igual que con la renta, la densidad tampoco explica de forma lineal la distribución de Valenbisi.
+
+**Autocorrelación espacial:** el índice I de Moran de la renta es 0,717 (p < 2,2×10⁻¹⁶), confirmando que la renta no se distribuye al azar en Valencia. El mapa LISA identifica un clúster Alto-Alto (rojo) compacto en el centro histórico y el Eixample, y varios clústeres Bajo-Bajo (azul) en el norte y noroeste (Benicalap, Torrefiel, Campanar) y en el oeste y suroeste (Patraix, Jesús). La superposición de las estaciones Valenbisi sobre el LISA muestra que los puntos negros se concentran predominantemente en la zona roja, mientras que los clústeres azules tienen presencia de estaciones notablemente inferior.
+
+---
+
+## Discusión
+
+Los resultados presentan un panorama matizado que merece una lectura honesta. Existe una diferencia de renta entre secciones cubiertas y no cubiertas, pero no es dramática y las dos distribuciones se solapan considerablemente. Ninguna variable individual , ni la renta ni la densidad , explica bien la distribución de Valenbisi de forma lineal. Lo que sí emerge con claridad es la coincidencia espacial entre el servicio y los hotspots de renta detectados por el LISA.
+
+Una interpretación alternativa es que Valenbisi no sigue una lógica socioeconómica sino una lógica de centralidad urbana: se implanta donde hay más actividad peatonal, comercial y turística, que en Valencia coincide con el centro y el Eixample. El hecho de que esas zonas sean también las de mayor renta es una consecuencia de la estructura urbana de la ciudad, no necesariamente una decisión deliberada de exclusión. Sea cual sea la causa, el resultado es el mismo: los barrios periféricos de menor renta tienen menos acceso al servicio.
+
+---
+
+## Conclusiones
+
+Este trabajo ha analizado si Valenbisi distribuye su red de forma equitativa en términos socioeconómicos, combinando análisis de cobertura por sección censal, correlaciones lineales y autocorrelación espacial de la renta.
+
+Los principales hallazgos son los siguientes. Las secciones con estaciones tienen una renta media un 14% superior a las que no tienen, aunque la relación lineal entre ambas variables es débil. Ni la renta ni la densidad de población explican de forma individual la distribución del servicio , la localización de Valenbisi responde a una lógica de centralidad urbana más compleja que cualquier variable aislada. El índice I de Moran (0,717) confirma que Valencia presenta una segregación socioeconómica espacial marcada, y el mapa LISA muestra que la red de estaciones coincide con los hotspots de renta alta, mientras que los coldspots de renta baja quedan sistemáticamente fuera del área de mayor cobertura.
+
+Como limitación principal, el análisis trabaja con la presencia de estaciones dentro de los límites de cada sección, sin considerar la accesibilidad desde secciones vecinas. Una sección sin estación propia pero colindante con una sección con varias puede tener acceso razonable al servicio. Incorporar un análisis de accesibilidad basado en distancias reales a pie sería el siguiente paso natural para enriquecer este trabajo.
+
+
+
+## Referencias
+
+Hosford, K., & Winters, M. (2018). Who are public bike share programs serving? An evaluation of the equity of spatial access to bike share service. *Transportation Research Record*, 2672(36), 42–50. [https://doi.org/10.1177/0361198118783107](https://doi.org/10.1177/0361198118783107)
+
+Kabra, A., Belavina, E., & Girotra, K. (2020). Bike-share systems- Accessibility and availability. *Management Science*, 66(9), 3803–3824. [https://doi.org/10.1287/mnsc.2019.3407](https://doi.org/10.1287/mnsc.2019.3407)
+
+Médard de Chardon, C., Caruso, G., & Thomas, I. (2016). Bike-share rebalancing strategies, patterns, and purpose. *Journal of Transport Geography*, 55, 22–39. [https://doi.org/10.1016/j.jtrangeo.2016.07.003](https://doi.org/10.1016/j.jtrangeo.2016.07.003)
+
+Ajuntament de València. (2025). *ValenBisi Disponibilitat* [Dataset]. Geoportal València. [https://geoportal.valencia.es](https://geoportal.valencia.es)
+
+Generalitat Valenciana. (2026). *Capa de secciones censales de la Comunitat Valenciana* [Dataset]. Dades Obertes GVA. [https://dadesobertes.gva.es](https://dadesobertes.gva.es)
+
+Instituto Nacional de Estadística. (2024). *Atlas de Distribución de Renta de los Hogares 2023*. [https://www.ine.es](https://www.ine.es)
+
+---
+## Anexo: Código R
+
+El siguiente bloque recoge el código R completo utilizado para el análisis. El documento es reproducible ejecutando el fichero `.qmd` adjunto con los datos incluidos en este ZIP.
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
