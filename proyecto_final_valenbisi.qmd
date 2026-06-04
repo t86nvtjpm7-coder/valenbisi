@@ -1,3 +1,4 @@
+
 ---
 title: "¿Llega Valenbisi a todos por igual? Análisis geoespacial de equidad en el sistema de bicicleta pública de Valencia"
 author: "Mireia Doménech Rodríguez"
@@ -114,7 +115,8 @@ secciones <- st_read(url_secciones, quiet = TRUE) %>%
   filter(INE_MUN == "46250") %>%
   st_transform(crs = 25830) %>%
   mutate(ID_SSCC = as.character(ID_SSCC)) %>%
-  left_join(renta_vlc, by = c("ID_SSCC" = "cusec"))
+  left_join(renta_vlc, by = c("ID_SSCC" = "cusec")) %>%
+  filter(!is.na(renta_media))
 
 
 ```
@@ -145,11 +147,13 @@ leaflet(estaciones_wgs) %>%
   addControl("<b>Estaciones Valenbisi — Valencia</b>", position = "topright")
 ```
 
-El mapa interactivo muestra las 273 estaciones activas de Valenbisi distribuidas por Valencia. El tamaño de cada círculo es proporcional a la capacidad de la estación , las más grandes corresponden a nodos de alta rotación como la estación de Renfe, el centro comercial El Saler o el Passeig de la Petxina.
+El mapa interactivo muestra las 273 estaciones activas de Valenbisi distribuidas por Valencia. El tamaño de cada círculo es proporcional a la capacidad de la estación , las más grandes corresponden a nodos de alta rotación como la estación de Renfe, el centro comercial El Saler o la zona universitaria de Blasco Ibañez.
 
 A simple vista se identifican dos patrones claros. Por un lado, una **alta densidad en el centro y el Eixample**, donde las estaciones se solapan visualmente y apenas hay huecos entre ellas. Por otro, una **caída progresiva hacia la periferia**: los barrios del noroeste (Benicalap, Torrefiel) y el oeste (Patraix, Jesús) tienen estaciones mucho más dispersas, con zonas sin cobertura visible. El extremo noreste (Ronda Nord, la zona junto al río Turia en el norte) y el extremo suroeste son las áreas con menor presencia.
 
 Esta distribución asimétrica es el punto de partida del análisis: si la red siguiera una lógica de cobertura equitativa, los puntos estarían más uniformemente repartidos por todo el municipio.
+
+Nota: el mapa interactivo completo está disponible en el documento HTML adjunto a esta entrega.
 
 ### Mapa de renta por sección censal
 
@@ -333,7 +337,7 @@ secciones %>%
   geom_point(color = "#FF69B4", alpha = 0.5, size = 1.5) +
   geom_smooth(method = "lm", color = "#C71585", se = TRUE, linewidth = 1) +
   labs(title    = "Relación entre renta media y número de estaciones Valenbisi",
-       subtitle = "Por sección censal — Valencia 2023",
+       subtitle = "Por sección censal - Valencia 2023",
        x = "Renta neta media por persona (€)",
        y = "Nº de estaciones en la sección") +
   theme_minimal(base_size = 12)
@@ -348,6 +352,8 @@ En resumen, este gráfico matiza los resultados anteriores: **existe una relaci�
 
 
 ---
+
+
 ###  Densidad urbana como variable alternativa
 
 La relación débil entre renta y número de estaciones observada en el gráfico anterior sugiere que puede haber otros factores con más poder explicativo. La **densidad de población** es el candidato más obvio: Valenbisi es un sistema de transporte urbano y es razonable esperar que las estaciones se sitúen donde hay más gente, independientemente de su nivel de renta.
@@ -418,7 +424,7 @@ moran.plot(
   secciones_ok$renta_media,
   listw     = ww,
   col       = "#FF69B4",
-  main      = "Gráfico de dispersión de Moran — Renta por sección censal",
+  main      = "Gráfico de dispersión de Moran - Renta por sección censal",
   xlab      = "Renta (estandarizada)",
   ylab      = "Retardo espacial (estandarizado)",
   zero.policy = TRUE)
@@ -470,7 +476,7 @@ lisa_map(secciones_ok, lisa_ren) +
   tm_borders(col = "grey60", lwd = 0.3) +
   tm_shape(estaciones_sf) +
   tm_dots(col = "black", size = 0.02) +
-  tm_layout(main.title      = "Mapa LISA — Renta por sección censal\ncon estaciones Valenbisi superpuestas",
+  tm_layout(main.title      = "Mapa LISA - Renta por sección censal\ncon estaciones Valenbisi superpuestas",
             main.title.size = 0.8,
             frame           = FALSE,
             legend.outside  = TRUE)
@@ -531,6 +537,10 @@ Médard de Chardon, C., Caruso, G., & Thomas, I. (2016). Bike-share rebalancing 
 
 Ajuntament de València. (2025). *ValenBisi Disponibilitat* [Dataset]. Geoportal València. [https://geoportal.valencia.es](https://geoportal.valencia.es)
 
+Generalitat Valenciana. (2026). *Capa de secciones censales de la Comunitat Valenciana* [Dataset]. Dades Obertes GVA. [https://dadesobertes.gva.es](https://dadesobertes.gva.es)
+
+Instituto Nacional de Estadística. (2024). *Atlas de Distribución de Renta de los Hogares 2023*. [https://www.ine.es](https://www.ine.es)
+
 ---
 
 ## Anexo
@@ -540,8 +550,3 @@ El código R completo y los datos utilizados para generar este análisis están 
 - Código R (QMD): [https://github.com/t86nvtjpm7-coder/valenbisi/blob/main/proyecto_final_valenbisi.qmd](https://github.com/t86nvtjpm7-coder/valenbisi/blob/main/proyecto_final_valenbisi.qmd)
 
 - Datos de población por sección censal (CSV): [https://github.com/t86nvtjpm7-coder/valenbisi/blob/main/4601.csv](https://github.com/t86nvtjpm7-coder/valenbisi/blob/main/4601.csv)
-Generalitat Valenciana. (2026). *Capa de secciones censales de la Comunitat Valenciana* [Dataset]. Dades Obertes GVA. [https://dadesobertes.gva.es](https://dadesobertes.gva.es)
-
-Instituto Nacional de Estadística. (2024). *Atlas de Distribución de Renta de los Hogares 2023*. [https://www.ine.es](https://www.ine.es)
-
----
