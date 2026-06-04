@@ -345,9 +345,9 @@ La recta de regresión tiene una **pendiente positiva muy leve** ,técnicamente 
 Lo que más llama la atención es que la mayoría de los puntos se apilan en **y = 0** independientemente de la renta , hay secciones con rentas muy bajas, medias y altas que tienen cero estaciones. Y los pocos valores altos de estaciones (4, 5, incluso el outlier de casi 12) aparecen en rentas intermedias, no necesariamente en las más altas.
 
 En resumen, este gráfico matiza los resultados anteriores: **existe una relación positiva entre renta y número de estaciones, pero es modesta y con mucha variabilidad**. La renta por sí sola no explica bien la distribución de Valenbisi , probablemente haya otros factores como la densidad urbana, la proximidad al centro histórico o la accesibilidad peatonal que tienen más peso.
+
+
 ---
-
-
 ###  Densidad urbana como variable alternativa
 
 La relación débil entre renta y número de estaciones observada en el gráfico anterior sugiere que puede haber otros factores con más poder explicativo. La **densidad de población** es el candidato más obvio: Valenbisi es un sistema de transporte urbano y es razonable esperar que las estaciones se sitúen donde hay más gente, independientemente de su nivel de renta.
@@ -531,14 +531,17 @@ Médard de Chardon, C., Caruso, G., & Thomas, I. (2016). Bike-share rebalancing 
 
 Ajuntament de València. (2025). *ValenBisi Disponibilitat* [Dataset]. Geoportal València. [https://geoportal.valencia.es](https://geoportal.valencia.es)
 
+---
+
+## Anexo
+
+El código R completo y los datos utilizados para generar este análisis están disponibles en los siguientes enlaces:
+
+- Código R (QMD): [https://github.com/t86nvtjpm7-coder/valenbisi/blob/main/proyecto_final_valenbisi.qmd](https://github.com/t86nvtjpm7-coder/valenbisi/blob/main/proyecto_final_valenbisi.qmd)
+
+- Datos de población por sección censal (CSV): [https://github.com/t86nvtjpm7-coder/valenbisi/blob/main/4601.csv](https://github.com/t86nvtjpm7-coder/valenbisi/blob/main/4601.csv)
 Generalitat Valenciana. (2026). *Capa de secciones censales de la Comunitat Valenciana* [Dataset]. Dades Obertes GVA. [https://dadesobertes.gva.es](https://dadesobertes.gva.es)
 
 Instituto Nacional de Estadística. (2024). *Atlas de Distribución de Renta de los Hogares 2023*. [https://www.ine.es](https://www.ine.es)
 
 ---
-## Anexo: Código R
-
-El siguiente bloque recoge el código R completo utilizado para el análisis. El documento es reproducible ejecutando el fichero `.qmd` adjunto con los datos incluidos en este ZIP.
-
-```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
-```
